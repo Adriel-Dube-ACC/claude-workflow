@@ -1,0 +1,100 @@
+#!/bin/bash
+set -euo pipefail
+
+# newproj — scaffold a NEW project with the full Claude workflow harness.
+#   newproj my-thing              # create ~/Claude/my-thing
+#   newproj my-thing --here       # scaffold into the current directory instead
+#   newproj --adopt               # existing project — delegates to `ralphify`
+
+TEMPLATE="${CLAUDE_WORKFLOW_TEMPLATE:-$HOME/Claude/claude-workflow-export}"
+PROJECTS_DIR="${CLAUDE_PROJECTS_DIR:-$HOME/Claude}"
+
+[[ -d "$TEMPLATE" ]] || { echo "Template not found: $TEMPLATE"; exit 1; }
+
+MODE="new"; NAME=""
+for arg in "$@"; do
+  case "$arg" in
+    --adopt) MODE="adopt" ;;
+    --here)  MODE="here" ;;
+    -*)      echo "Unknown flag: $arg"; exit 1 ;;
+    *)       NAME="$arg" ;;
+  esac
+done
+
+# Existing projects get the brownfield path: stack detection, candidate checks,
+# and a hand-off to /scaffold-workflow. newproj stays the greenfield tool.
+if [[ "$MODE" == "adopt" ]]; then
+  if command -v ralphify >/dev/null 2>&1; then
+    exec ralphify
+  elif [[ -x "$HOME/bin/ralphify" ]]; then
+    exec "$HOME/bin/ralphify"
+  else
+    echo "newproj --adopt now requires ralphify (~/bin/ralphify) — not found." >&2
+    exit 1
+  fi
+fi
+
+case "$MODE" in
+  new)
+    [[ -n "$NAME" ]] || { echo "Usage: newproj <name> [--here] | newproj --adopt"; exit 1; }
+    DEST="$PROJECTS_DIR/$NAME"
+    [[ -e "$DEST" ]] && { echo "Already exists: $DEST"; exit 1; }
+    mkdir -p "$DEST"
+    ;;
+  here)  DEST="$PWD"; NAME="${NAME:-$(basename "$PWD")}" ;;
+  adopt) DEST="$PWD"; NAME="$(basename "$PWD")" ;;
+esac
+
+cd "$DEST"
+
+# --- harness files (never clobber existing ones) ---
+mkdir -p ralph issues/done docs .claude/skills
+
+for f in "$TEMPLATE"/ralph/*; do
+  base=$(basename "$f")
+  [[ -e "ralph/$base" ]] || cp "$f" "ralph/$base"
+done
+chmod +x ralph/*.sh 2>/dev/null || true
+
+[[ -e AGENTS.md ]] || cp "$TEMPLATE/AGENTS.md" AGENTS.md
+touch issues/done/.gitkeep docs/.gitkeep
+
+# Project skills are optional: the same skills live globally in ~/.claude/skills.
+# Copy them in only if you want the project to be self-contained/shareable.
+if [[ "${NEWPROJ_VENDOR_SKILLS:-0}" == "1" ]]; then
+  cp -Rn "$TEMPLATE/.claude/skills/." .claude/skills/ 2>/dev/null || true
+fi
+
+# --- CLAUDE.md stub ---
+if [[ ! -e CLAUDE.md ]]; then
+  cat > CLAUDE.md <<EOF
+# $NAME — Claude Code Instructions
+
+## Project summary
+
+<one paragraph: what this is, the stack, the primary files to know>
+
+## Code style
+
+<conventions that differ from language defaults>
+
+## Workflow
+
+- Operational commands and the checks that gate a commit live in \`AGENTS.md\`.
+- Issues live in \`issues/\`; completed ones move to \`issues/done/\`.
+EOF
+fi
+
+# --- git ---
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  git init -q
+  [[ -e .gitignore ]] || printf '.DS_Store\n.env\nnode_modules/\n__pycache__/\n.venv/\n' > .gitignore
+fi
+
+echo "✓ Workflow harness ready in $DEST"
+echo
+echo "Next:"
+echo "  1. Fill in the Checks section of AGENTS.md with real test/typecheck commands."
+echo "  2. cd \"$DEST\" && claude"
+echo "  3. /write-a-prd  →  /prd-to-issues  →  /analyze-issues"
+echo "  4. ./ralph/loop.sh build 3"

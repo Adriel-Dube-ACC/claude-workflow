@@ -1,0 +1,326 @@
+#!/bin/bash
+set -euo pipefail
+
+# ralphify — add the Ralph workflow harness to an EXISTING project.
+# Companion to `newproj`, which scaffolds greenfield projects.
+#
+# Nothing is ever overwritten. Detected checks land in AGENTS.md as UNVERIFIED
+# candidates; `/scaffold-workflow` inside Claude runs them and finalizes the file.
+
+TEMPLATE="${CLAUDE_WORKFLOW_TEMPLATE:-$HOME/Claude/claude-workflow-export}"
+
+usage() {
+  cat <<'EOF'
+ralphify — adopt the Ralph workflow harness in an existing project.
+
+  ralphify                  adopt the harness in the current directory
+  ralphify <path>           adopt it in <path>
+  ralphify --dry-run        show what would change, write nothing
+  ralphify --vendor-skills  also copy the skills into .claude/skills/
+
+Adds (only if missing): ralph/, AGENTS.md, issues/done/, docs/, CLAUDE.md stub.
+Existing files are never touched.
+EOF
+}
+
+die() { echo "ralphify: $*" >&2; exit 1; }
+
+DRY=0
+VENDOR="${NEWPROJ_VENDOR_SKILLS:-0}"
+DEST=""
+
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run)       DRY=1 ;;
+    --vendor-skills) VENDOR=1 ;;
+    -h|--help)       usage; exit 0 ;;
+    -*)              usage >&2; die "unknown flag: $arg" ;;
+    *)               DEST="$arg" ;;
+  esac
+done
+
+[[ -d "$TEMPLATE" ]] || die "template not found: $TEMPLATE (set CLAUDE_WORKFLOW_TEMPLATE)"
+DEST="${DEST:-$PWD}"
+[[ -d "$DEST" ]] || die "not a directory: $DEST"
+cd "$DEST"
+DEST="$PWD"
+NAME="$(basename "$DEST")"
+
+CREATED=(); KEPT=(); NOTES=(); CHECKS=()
+
+note() { NOTES+=("$1"); }
+
+place() { # place <src> <dst>
+  local src="$1" dst="$2"
+  if [[ -e "$dst" ]]; then KEPT+=("$dst"); return 0; fi
+  if (( DRY == 0 )); then
+    mkdir -p "$(dirname "$dst")"
+    cp "$src" "$dst"
+  fi
+  CREATED+=("$dst")
+}
+
+place_dir() { # place_dir <dir>  (with a .gitkeep so it survives git)
+  local dir="$1"
+  if [[ -d "$dir" ]]; then KEPT+=("$dir/"); return 0; fi
+  if (( DRY == 0 )); then
+    mkdir -p "$dir"
+    touch "$dir/.gitkeep"
+  fi
+  CREATED+=("$dir/")
+}
+
+# --------------------------------------------------------------------------
+# Stack detection — candidate checks only. Nothing here is executed.
+# --------------------------------------------------------------------------
+
+has() { command -v "$1" >/dev/null 2>&1; }
+
+pkg_runner() { # npm | pnpm | yarn | bun
+  [[ -f pnpm-lock.yaml ]] && { echo pnpm; return; }
+  [[ -f yarn.lock      ]] && { echo yarn; return; }
+  [[ -f bun.lockb || -f bun.lock ]] && { echo bun; return; }
+  echo npm
+}
+
+npm_has_script() { # npm_has_script <name>
+  [[ -f package.json ]] || return 1
+  if has jq; then
+    jq -e --arg s "$1" '.scripts // {} | has($s)' package.json >/dev/null 2>&1
+  else
+    grep -qE "^[[:space:]]*\"$1\"[[:space:]]*:" package.json
+  fi
+}
+
+detect_node() {
+  [[ -f package.json ]] || return 0
+  local run; run="$(pkg_runner)"
+  local prefix="$run run"
+  [[ "$run" == "npm" ]] && prefix="npm run"
+
+  npm_has_script test      && CHECKS+=("$([[ $run == npm ]] && echo 'npm test' || echo "$run test")")
+  npm_has_script typecheck && CHECKS+=("$prefix typecheck")
+  npm_has_script lint      && CHECKS+=("$prefix lint")
+  npm_has_script build     && CHECKS+=("$prefix build")
+
+  if ! npm_has_script test; then
+    [[ -f vitest.config.ts || -f vitest.config.js ]] && CHECKS+=("$run vitest run")
+    [[ -f jest.config.js || -f jest.config.ts ]] && CHECKS+=("$prefix jest")
+  fi
+  if ! npm_has_script typecheck && [[ -f tsconfig.json ]]; then
+    CHECKS+=("npx tsc --noEmit")
+  fi
+
+  if [[ -f pnpm-workspace.yaml ]] || { has jq && jq -e '.workspaces' package.json >/dev/null 2>&1; }; then
+    note "monorepo/workspaces detected — confirm the working directory each check must run from"
+  fi
+  [[ -d node_modules ]] || note "node_modules/ is absent — install deps before verifying checks"
+  return 0
+}
+
+detect_python() {
+  local py=0
+  [[ -f pyproject.toml || -f setup.py || -f setup.cfg || -f requirements.txt ]] && py=1
+  (( py )) || return 0
+
+  local bin=""
+  [[ -x .venv/bin/python ]] && bin=".venv/bin/"
+  [[ -z "$bin" && -x venv/bin/python ]] && bin="venv/bin/"
+  [[ -n "$bin" ]] && note "virtualenv at ${bin%/bin/} — activate it, or use the ${bin} prefixed commands below"
+
+  if [[ -d tests || -d test ]] || compgen -G "test_*.py" >/dev/null || compgen -G "*/test_*.py" >/dev/null \
+     || grep -qs pytest pyproject.toml requirements.txt setup.cfg 2>/dev/null; then
+    CHECKS+=("${bin}pytest -q")
+  fi
+  if [[ -f .ruff.toml || -f ruff.toml ]] || grep -qs 'ruff' pyproject.toml requirements.txt 2>/dev/null; then
+    CHECKS+=("${bin}ruff check .")
+  fi
+  if [[ -f mypy.ini ]] || grep -qs 'mypy' pyproject.toml setup.cfg requirements.txt 2>/dev/null; then
+    CHECKS+=("${bin}mypy .")
+  fi
+  return 0
+}
+
+detect_go() {
+  [[ -f go.mod ]] || return 0
+  CHECKS+=("go test ./..." "go vet ./...")
+  return 0
+}
+
+detect_rust() {
+  [[ -f Cargo.toml ]] || return 0
+  CHECKS+=("cargo test" "cargo clippy -- -D warnings")
+  return 0
+}
+
+detect_make() {
+  [[ -f Makefile ]] || return 0
+  local t
+  for t in test check lint typecheck; do
+    grep -qE "^${t}:" Makefile && CHECKS+=("make $t")
+  done
+  return 0   # a trailing failed grep must not trip `set -e`
+}
+
+detect_node
+detect_python
+detect_go
+detect_rust
+detect_make
+
+# --------------------------------------------------------------------------
+# Harness files
+# --------------------------------------------------------------------------
+
+for f in "$TEMPLATE"/ralph/*; do
+  [[ -e "$f" ]] || continue
+  place "$f" "ralph/$(basename "$f")"
+done
+(( DRY == 0 )) && chmod +x ralph/*.sh 2>/dev/null || true
+
+place_dir issues/done
+place_dir docs
+
+[[ -e ralph/prompt.md ]] && note "ralph/prompt.md is the old single-prompt harness — superseded by PROMPT_plan.md + PROMPT_build.md; delete it"
+
+if (( VENDOR )); then
+  if (( DRY == 0 )); then
+    mkdir -p .claude/skills
+    cp -Rn "$TEMPLATE/.claude/skills/." .claude/skills/ 2>/dev/null || true
+  fi
+  CREATED+=(".claude/skills/ (vendored)")
+else
+  note "skills stay global in ~/.claude/skills — pass --vendor-skills to make this project self-contained"
+fi
+
+# --- AGENTS.md: template preamble + detected candidates -------------------
+if [[ -e AGENTS.md ]]; then
+  KEPT+=("AGENTS.md")
+  # A real check is a "- `cmd`" line under ## Checks that is NOT inside an
+  # HTML comment — the stock template ships commented-out examples.
+  if awk '
+      /^## Checks/ { inchecks = 1; next }
+      /^## /       { inchecks = 0 }
+      /<!--/       { incomment = 1 }
+      /-->/        { incomment = 0; next }
+      inchecks && !incomment && /^- `/ { found = 1 }
+      END { exit !found }
+    ' AGENTS.md; then
+    note "AGENTS.md already has a filled Checks section — left untouched"
+  else
+    note "AGENTS.md exists but its Checks section is EMPTY — Ralph has no gate until you fill it"
+  fi
+else
+  CREATED+=("AGENTS.md")
+  if (( DRY == 0 )); then
+    {
+      cat <<'EOF'
+# AGENTS.md — operational guide
+
+Keep this file under ~60 lines. Operational facts only — commands, quirks, gotchas
+discovered the hard way. It is loaded on every Ralph iteration, so every line costs
+context on every run. It is NOT a changelog.
+
+## Checks (must all exit 0 before any commit)
+
+EOF
+      if (( ${#CHECKS[@]} )); then
+        echo "<!-- UNVERIFIED candidates detected by ralphify on $(date +%Y-%m-%d)."
+        echo "     Run each one. Delete what fails, uncomment what passes."
+        echo "     \`/scaffold-workflow\` in Claude does this for you. -->"
+        echo "<!--"
+        printf -- '- `%s`\n' "${CHECKS[@]}"
+        echo "-->"
+      else
+        echo "<!-- No checks detected. Ralph must not run autonomously without a gate:"
+        echo "     get one trivial test passing first, then list its command here. -->"
+      fi
+      cat <<'EOF'
+
+## Build & run
+
+<!-- How to build / start the app, required env vars, migrations -->
+
+## Quirks
+
+<!-- Environment gotchas, non-obvious behaviors -->
+EOF
+    } > AGENTS.md
+  fi
+fi
+
+# --- CLAUDE.md stub -------------------------------------------------------
+if [[ -e CLAUDE.md ]]; then
+  KEPT+=("CLAUDE.md")
+else
+  CREATED+=("CLAUDE.md")
+  if (( DRY == 0 )); then
+    cat > CLAUDE.md <<EOF
+# $NAME — Claude Code Instructions
+
+## Project summary
+
+<one paragraph: what this is, the stack, the primary files to know>
+
+## Code style
+
+<conventions that differ from language defaults>
+
+## Workflow
+
+- Operational commands and the checks that gate a commit live in \`AGENTS.md\`.
+- Issues live in \`issues/\`; completed ones move to \`issues/done/\`.
+EOF
+  fi
+fi
+
+# --- git sanity (existing project: report, never mutate) ------------------
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  if [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then
+    note "working tree is dirty — commit or stash before running Ralph so its diffs stay legible"
+  fi
+else
+  note "not a git repo — run \`git init\` first; Ralph relies on commits to checkpoint each iteration"
+fi
+
+# --------------------------------------------------------------------------
+# Report
+# --------------------------------------------------------------------------
+
+echo
+(( DRY )) && echo "DRY RUN — nothing was written."
+echo "Ralph harness — $NAME ($DEST)"
+
+if (( ${#CREATED[@]} )); then
+  echo
+  echo "  Created:"
+  printf '    + %s\n' "${CREATED[@]}"
+fi
+if (( ${#KEPT[@]} )); then
+  echo
+  echo "  Kept (untouched):"
+  printf '    = %s\n' "${KEPT[@]}"
+fi
+if (( ${#CHECKS[@]} )); then
+  echo
+  echo "  Candidate checks (UNVERIFIED — none of these were run):"
+  printf '    ? %s\n' "${CHECKS[@]}"
+else
+  echo
+  echo "  Candidate checks: none detected."
+fi
+if (( ${#NOTES[@]} )); then
+  echo
+  echo "  Notes:"
+  printf '    ! %s\n' "${NOTES[@]}"
+fi
+
+cat <<EOF
+
+Next:
+  1. cd "$DEST" && claude
+  2. /scaffold-workflow   <- runs the candidate checks and finalizes AGENTS.md
+  3. /research            <- map the existing code before planning any work
+  4. /write-a-prd  ->  /prd-to-issues  ->  /analyze-issues
+  5. ./ralph/loop.sh build 3
+EOF
