@@ -115,9 +115,9 @@ write that directory into the check line.
 
 ## 4. Write AGENTS.md
 
-**Append, never replace.** Edit only the harness section (`## Checks`, `## Build &
-run`, `## Quirks` — between the `ralph-harness` markers when ralphify appended
-them). Never rewrite the file wholesale, and never touch another tool's managed
+**Append, never replace.** Edit only the harness section (`## Checks`, `## Context &
+handoff`, `## Build & run`, `## Quirks` — between the `ralph-harness` markers when
+ralphify appended them). Never rewrite the file wholesale, and never touch another tool's managed
 block (`<!-- BEGIN:nextjs-agent-rules -->` … `<!-- END:… -->` and the like): the
 tool that owns it rewrites it, and deleting it only produces a dirty diff later.
 

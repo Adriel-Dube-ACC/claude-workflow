@@ -84,6 +84,16 @@ for cmd in "${CMDS[@]}"; do
   fi
 done
 
+# Remember this run for ralph/context-hooks.sh (the failing check survives a
+# compaction). Kept under the git dir, so it is per worktree and never committed.
+if record="$(git rev-parse --git-path ralph/last-checks.json 2>/dev/null)"; then
+  mkdir -p "$(dirname "$record")" 2>/dev/null \
+    && jq -n --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+         --arg head "$(git rev-parse --short HEAD 2>/dev/null || echo none)" \
+         --arg src "$SRC" --argjson r "$JSON" \
+         '{at: $at, head: $head, source: $src, results: $r}' >"$record" 2>/dev/null || true
+fi
+
 if [[ "$MODE" == "json" ]]; then
   jq . <<<"$JSON"
 else

@@ -2,9 +2,9 @@
 set -uo pipefail
 
 # Behaviour tests for the harness scripts: ralph/checks.sh, ralph/status.sh,
-# ralph/result.sh, the progress lines ralph/loop.sh writes, and bin/ralphify's
-# AGENTS.md handling. Each test builds a throwaway git repo, so nothing here
-# touches a real project.
+# ralph/result.sh, ralph/context-hooks.sh, the progress lines and inbox flag of
+# ralph/loop.sh, and bin/ralphify's AGENTS.md handling. Each test builds a
+# throwaway git repo, so nothing here touches a real project.
 #   tests/harness.test.sh        # exit 0 only if every assertion holds
 
 TEMPLATE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -231,6 +231,120 @@ F="$WORK/filled"
 mkdir -p "$F" && agents_md "$F" "true" && cp "$F/AGENTS.md" "$WORK/filled-orig.md"
 env CLAUDE_WORKFLOW_TEMPLATE="$TEMPLATE" "$TEMPLATE/bin/ralphify" "$F" >/dev/null 2>&1
 check "an AGENTS.md that already has Checks is left untouched" cmp -s "$F/AGENTS.md" "$WORK/filled-orig.md"
+
+echo "status.sh agreement with issue files"
+R=$(new_repo agree)
+agents_md "$R" "true"
+status_json "$R" "test -f feature.ok"
+issue_file() { # issue_file <path> <type line> <check> <blocked-by body>
+  printf '# Title\n\n## Type\n\n%s\n\n## Check\n\n`%s`\n\n## Blocked by\n\n%s\n' "$2" "$3" "$4" >"$1"
+}
+agree_files() {
+  issue_file "$R/issues/001-walking-skeleton.md" "HITL (human prerequisites below) — or AFK if they already exist" \
+    "test -f skeleton.ok" "None - can start immediately"
+  issue_file "$R/issues/002-feature.md" "AFK" "test -f feature.ok" "- Blocked by \`issues/001-walking-skeleton.md\`"
+}
+agree_files
+check "issue files that agree with status.json validate" bash -c "cd '$R' && ./ralph/status.sh validate"
+issue_file "$R/issues/002-feature.md" "HITL" "test -f feature.ok" "- Blocked by \`issues/001-walking-skeleton.md\`"
+refute "an issue file whose Type disagrees is rejected" bash -c "cd '$R' && ./ralph/status.sh validate"
+check "the disagreement names both sides" bash -c "cd '$R' && ./ralph/status.sh validate 2>&1 | grep -q 'says type HITL, issues/status.json says AFK'"
+agree_files; issue_file "$R/issues/002-feature.md" "AFK" "true" "- Blocked by \`issues/001-walking-skeleton.md\`"
+refute "an issue file whose Check disagrees is rejected" bash -c "cd '$R' && ./ralph/status.sh validate"
+agree_files; issue_file "$R/issues/002-feature.md" "AFK" "test -f feature.ok" "None - can start immediately"
+refute "an issue file whose Blocked by disagrees is rejected" bash -c "cd '$R' && ./ralph/status.sh validate"
+agree_files
+mv "$R/issues/002-feature.md" "$R/issues/feature-002.md"
+jq '.issues[1].file = "feature-002.md"' "$R/issues/status.json" >"$R/s" && mv "$R/s" "$R/issues/status.json"
+refute "a file name that does not start with its id is rejected" bash -c "cd '$R' && ./ralph/status.sh validate"
+
+echo "checks.sh run record"
+R=$(new_repo record)
+agents_md "$R" "true" "exit 3"
+(cd "$R" && ./ralph/checks.sh >/dev/null 2>&1)
+REC="$(git -C "$R" rev-parse --path-format=absolute --git-path ralph/last-checks.json)"
+check "checks.sh records each exit code of its last run" jq -e '.results | map(.exit_code) == [0,3]' "$REC"
+check "the record lives under the git dir, not the working tree" bash -c "[[ '$REC' == \"\$(git -C '$R' rev-parse --absolute-git-dir)/\"* ]]"
+
+echo "context-hooks.sh"
+R=$(new_repo hooks)
+agents_md "$R" "true" "exit 3"
+status_json "$R" "test -f feature.ok"
+git -C "$R" add -A && git -C "$R" commit -qm init
+git -C "$R" checkout -q -b issue-002
+(cd "$R" && ./ralph/checks.sh >/dev/null 2>&1; ./ralph/status.sh progress "002: WIP — wired the form; next: make the save test pass")
+NOTE="$(git -C "$R" rev-parse --path-format=absolute --git-path ralph/context.md)"
+PRE='{"session_id":"s-1","hook_event_name":"PreCompact","trigger":"manual","custom_instructions":"keep the save-test plan"}'
+check "precompact exits 0 and writes the note" bash -c "cd '$R' && echo '$PRE' | ./ralph/context-hooks.sh precompact && test -s '$NOTE'"
+check "the note names the current issue (from the branch)" grep -q 'Current issue: 002 — Feature (AFK), check: `test -f feature.ok` (from branch issue-002)' "$NOTE"
+check "the note names the failing check and its exit code" grep -q 'failing: `exit 3` (exit 3)' "$NOTE"
+check "the note carries the last progress line as the next step" grep -q 'next: make the save test pass' "$NOTE"
+check "the note carries the /compact focus line" grep -q '/compact focus: keep the save-test plan' "$NOTE"
+check "the note is never in the working tree" bash -c "[[ '$NOTE' == \"\$(git -C '$R' rev-parse --absolute-git-dir)/\"* ]] && ! git -C '$R' status --porcelain --ignored | grep -q context.md"
+check "sessionstart(compact) re-injects the note as additionalContext" bash -c "cd '$R' && echo '{\"session_id\":\"s-1\",\"source\":\"compact\"}' | ./ralph/context-hooks.sh sessionstart \
+  | jq -e '.hookSpecificOutput.hookEventName == \"SessionStart\" and (.hookSpecificOutput.additionalContext | contains(\"Current issue: 002\"))'"
+check "sessionstart on a fresh startup injects nothing" bash -c "cd '$R' && [[ -z \$(echo '{\"session_id\":\"s-1\",\"source\":\"startup\"}' | ./ralph/context-hooks.sh sessionstart) ]]"
+touch -t 202001010000 "$NOTE"
+check "an old note from another session is not injected" bash -c "cd '$R' && [[ -z \$(echo '{\"session_id\":\"s-2\",\"source\":\"compact\"}' | ./ralph/context-hooks.sh sessionstart) ]]"
+check "an old note from the same session still is" bash -c "cd '$R' && echo '{\"session_id\":\"s-1\",\"source\":\"compact\"}' | ./ralph/context-hooks.sh sessionstart | jq -e .hookSpecificOutput"
+check "precompact never blocks compaction, even on garbage input" bash -c "cd '$R' && echo 'not json' | ./ralph/context-hooks.sh precompact"
+U=$(new_repo unwritable)
+touch "$(git -C "$U" rev-parse --absolute-git-dir)/ralph"
+check "precompact exits 0 even when the note cannot be written (exit 2 would block compaction)" \
+  bash -c "cd '$U' && echo '$PRE' | ./ralph/context-hooks.sh precompact"
+git -C "$R" checkout -q main
+(cd "$R" && ./ralph/context-hooks.sh snapshot >/dev/null)
+check "off an issue branch the issue comes from the last progress line" grep -q 'Current issue: 002 .*(from last progress line)' "$NOTE"
+git -C "$R" worktree add -q -b issue-001 "$WORK/hooks-wt" main
+(cd "$WORK/hooks-wt" && echo '{"session_id":"w"}' | ./ralph/context-hooks.sh precompact)
+WTNOTE="$(git -C "$WORK/hooks-wt" rev-parse --path-format=absolute --git-path ralph/context.md)"
+check "each worktree keeps its own note" bash -c "[[ '$WTNOTE' != '$NOTE' ]] && grep -q 'Current issue: 001' '$WTNOTE' && grep -q 'Current issue: 002' '$NOTE'"
+mkdir -p "$R/.claude"
+echo '{"permissions":{"allow":["Bash(ls)"]},"hooks":{"PreCompact":[{"hooks":[{"type":"command","command":"echo mine"}]}]}}' >"$R/.claude/settings.local.json"
+check "install adds the two hooks to settings.local.json" bash -c "cd '$R' && ./ralph/context-hooks.sh install"
+S="$R/.claude/settings.local.json"
+check "install keeps the user's own hooks and settings" \
+  jq -e '(.hooks.PreCompact | length) == 2 and .hooks.PreCompact[0].hooks[0].command == "echo mine" and .permissions.allow == ["Bash(ls)"]' "$S"
+check "SessionStart is matched to compact only" jq -e '.hooks.SessionStart == [.hooks.SessionStart[0]] and .hooks.SessionStart[0].matcher == "compact"' "$S"
+(cd "$R" && ./ralph/context-hooks.sh install >/dev/null)
+check "a second install adds nothing" jq -e '(.hooks.PreCompact | length) == 2 and (.hooks.SessionStart | length) == 1' "$S"
+check "settings.local.json is kept out of git" git -C "$R" check-ignore -q .claude/settings.local.json
+rm -f "$NOTE"
+CMD="$(jq -r '.hooks.PreCompact[1].hooks[0].command' "$S")"
+check "the installed PreCompact command runs as Claude Code would run it" \
+  bash -c "cd /tmp && echo '$PRE' | CLAUDE_PROJECT_DIR='$R' bash -c '$CMD' && grep -q 'Current issue: 002' '$NOTE'"
+(cd "$R" && ./ralph/context-hooks.sh uninstall >/dev/null)
+check "uninstall removes only the harness hooks" \
+  jq -e '.hooks == {"PreCompact":[{"hooks":[{"type":"command","command":"echo mine"}]}]} and .permissions.allow == ["Bash(ls)"]' "$S"
+(cd "$R" && ./ralph/context-hooks.sh install --shared >/dev/null)
+check "install --shared writes the committed settings.json" jq -e '.hooks.SessionStart[0].matcher == "compact"' "$R/.claude/settings.json"
+(cd "$R" && ./ralph/context-hooks.sh uninstall --shared >/dev/null)
+check "uninstall --shared leaves no empty hooks object" jq -e 'has("hooks") | not' "$R/.claude/settings.json"
+
+echo "loop.sh inbound messages"
+R=$(new_repo inbound)
+cp "$TEMPLATE/ralph/PROMPT_build.md" "$R/ralph/"
+agents_md "$R" "true"
+status_json "$R" "true"
+git -C "$R" add -A && git -C "$R" commit -qm init
+mkdir -p "$WORK/argbin"
+cat >"$WORK/argbin/claude" <<EOF
+#!/bin/bash
+printf '%s\n' "\$@" >"$WORK/claude-args"
+echo '{"type":"result","result":"<promise>NO MORE TASKS</promise>"}'
+EOF
+chmod +x "$WORK/argbin/claude"
+check "RALPH_INBOUND=accept starts claude with crossSessionInbound accept" \
+  bash -c "cd '$R' && RALPH_INBOUND=accept PATH='$WORK/argbin:$PATH' ./ralph/loop.sh build 1 >/dev/null && grep -A1 -x -- '--settings' '$WORK/claude-args' | grep -qx '{\"crossSessionInbound\":\"accept\"}'"
+check "without RALPH_INBOUND no settings are passed" \
+  bash -c "cd '$R' && PATH='$WORK/argbin:$PATH' ./ralph/loop.sh build 1 >/dev/null && ! grep -qx -- '--settings' '$WORK/claude-args'"
+refute "an unknown RALPH_INBOUND value is refused" bash -c "cd '$R' && RALPH_INBOUND=yes PATH='$WORK/argbin:$PATH' ./ralph/loop.sh build 1"
+
+echo "AGENTS.md context section"
+check "the template AGENTS.md has the Context & handoff section" grep -q '^## Context & handoff' "$TEMPLATE/AGENTS.md"
+check "the context section does not leak into the parsed Checks" \
+  bash -c "cp '$TEMPLATE/AGENTS.md' '$WORK/tpl-agents.md' && ! '$TEMPLATE/ralph/checks.sh' --from '$WORK/tpl-agents.md' --list"
+check "ralphify's appended harness section includes it" grep -q '^## Context & handoff' "$WORK/next-app/AGENTS.md"
 
 echo
 echo "harness tests: $PASSES passed, $FAILS failed"

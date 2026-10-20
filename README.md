@@ -156,12 +156,13 @@ Ralph is a bash loop that feeds a fresh Claude a prompt each iteration. Progress
 
 | Script | What | Where |
 |---|---|---|
-| `loop.sh [plan\|build] [n]` | headless loop, `--permission-mode auto` | local |
+| `loop.sh [plan\|build] [n]` | headless loop, `--permission-mode auto`; `RALPH_INBOUND=accept` opens its inbox to your other sessions | local |
 | `once.sh [plan\|build]` | single interactive iteration | local, supervised |
 | `afk.sh <n> [plan\|build]` | headless loop | Docker sandbox |
 | `checks.sh [--json\|--list]` | runs every AGENTS.md Check; an empty Checks section fails | any |
 | `status.sh validate\|summary\|next\|pass <id>\|progress "<text>"` | `issues/status.json` + `issues/progress.md` | any |
 | `result.sh validate\|verify <file> <base>` | the fan-out return contract | orchestrator |
+| `context-hooks.sh install\|uninstall\|snapshot\|show` | opt-in PreCompact / SessionStart(compact) hooks that carry a state note across compaction | interactive sessions |
 
 All three loop scripts stop early on `<promise>NO MORE TASKS</promise>` (build) or `<promise>PLAN COMPLETE</promise>` (plan).
 
@@ -170,8 +171,27 @@ All three loop scripts stop early on `<promise>NO MORE TASKS</promise>` (build) 
 - **`issues/status.json`** — one entry per issue: id, file, title, type, behaviour, check command, blockedBy, `passes`. Everything starts failing. Only `./ralph/status.sh pass <id>` flips `passes`, after the AGENTS.md Checks *and* the issue's own check exit 0 with every blocker already passing; it stores the evidence in `verified`, and `validate` rejects a `true` without it.
 - **`issues/progress.md`** — append-only log. The loop scripts log each iteration's start (HEAD + passing count), `status.sh pass` logs PASS/FAIL with exit codes, and the build prompt has the agent log what it did and what's next. It's the handoff between fresh contexts.
 - **`issues/<id>.result.json`** — one per fan-out agent, verified by `result.sh verify`.
+- **`.git/ralph/last-checks.json`, `.git/ralph/context.md`** — per worktree, never committed: the last `checks.sh` run (what is failing), and the state note `context-hooks.sh` writes before a compaction.
 
 Tests for all of this: `tests/harness.test.sh`.
+
+### Context and handoff
+
+Long sessions lose what exists only in the conversation, so the harness keeps state in files and git and makes compaction deliberate. The AGENTS.md "Context & handoff" section says it in five lines: commit at every green `./ralph/checks.sh` run (git is the real checkpoint — `/rewind` misses Bash edits and subagent worktrees), `/compact <focus line>` at a clean boundary before the window fills, research goes to subagents that return summaries, and switching tasks means a `progress` line, a commit, `/clear`, and a fresh start from `issues/progress.md`. Ralph's own passes already start fresh; `PROMPT_build.md` has the agent commit at each green run and log a WIP line when a pass runs long.
+
+Optional hooks, per project and opt-in:
+
+```sh
+./ralph/context-hooks.sh install          # .claude/settings.local.json (kept out of git)
+./ralph/context-hooks.sh install --shared # .claude/settings.json, for the whole team
+./ralph/context-hooks.sh uninstall
+```
+
+`PreCompact` writes a short note — branch and HEAD, current issue (from the branch name, the last progress line, or the next runnable issue), the failing checks from the last `checks.sh` run, the last progress line as the next step, and the `/compact` focus line — and `SessionStart` with source `compact` re-injects it. Nothing touches `~/.claude/settings.json`.
+
+### Messages between sessions
+
+When worktree agents run in parallel, the one that changes something the others build on (a schema rename, a shared util) says so: `SendMessage` with what changed, what to do, and a commit or file path — two lines, never a diff. In `/fan-out-issues` children message the orchestrator, which relays to the running siblings; separate `claude -p` / `claude --bg` workers message each other directly after `ListAgents`. Unattended workers need their inbox open — `claude -p --settings '{"crossSessionInbound":"accept"}' …`, or `RALPH_INBOUND=accept ./ralph/loop.sh build N` — because a bypass-permissions receiver holds messages and a held message in `-p` expires after about five minutes. Use `notify_when_idle` instead of polling a long run, and `"permissions": {"deny": ["SendMessage", "ListAgents"]}` in repos where agents should not talk.
 
 ### AGENTS.md
 
@@ -192,7 +212,7 @@ Invoked with `/skill-name`. Defined in `.claude/skills/` (and globally in `~/.cl
 | `/write-a-spec` | Feature finishable in ~a day | `SPEC.md` (then `/clear` + `/goal`) |
 | `/write-a-prd` | Multi-day, multi-slice work | `issues/prd.md` |
 | `/prd-to-issues` | After a PRD | `issues/NNN-*.md` |
-| `/analyze-issues` | After prd-to-issues, before building | consistency report |
+| `/analyze-issues` | After prd-to-issues, before building | consistency report, incl. `status.sh validate` |
 | `/fan-out-issues` | ≥2 unblocked AFK issues | parallel branches |
 | `/tdd` | Any implementation (Ralph uses it automatically) | red → green → refactor |
 | `/improve-codebase-architecture` | Weekly, or after a surge of development | refactor RFC in `issues/` |

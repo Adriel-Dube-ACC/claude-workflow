@@ -57,7 +57,16 @@ Keep it under ~60 lines; it loads on every Ralph iteration. Edit only the harnes
 
 ## Quirks
 - <non-obvious gotchas: monorepo layout, env setup, things that bite>
+
+## Context & handoff
+- Commit at every green `./ralph/checks.sh` run. Git is the real checkpoint: /rewind misses Bash edits and subagent worktrees.
+- Before the window fills (`/context` shows it), `/compact` at a clean boundary with a focus line, e.g. `/compact keep issue 003, the failing auth test, the session-table plan` — don't wait for auto-compact.
+- Research-heavy steps (repo sweeps, docs, long logs) go to a subagent that returns a short summary.
+- Switching tasks: `./ralph/status.sh progress "<id>: done; left; next"`, commit, `/clear`, then start from `issues/progress.md`.
+- Optional: `./ralph/context-hooks.sh install` saves a state note (issue, failing check, next step) before each compaction and re-injects it after.
 ```
+
+Keep the "Context & handoff" section as written unless the project needs something different; it is how a long session keeps its state in files and git rather than in the conversation. The hooks it mentions are opt-in: install them only if the user asks — they go into the project's `.claude/settings.local.json`, never `~/.claude/settings.json`.
 
 Confirm with `./ralph/checks.sh` — it runs exactly what the Ralph loop will run, parsed from the file you just wrote, and must end `checks: N/N passed`.
 

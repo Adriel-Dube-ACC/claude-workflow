@@ -17,7 +17,7 @@ Parallel implementation of independent issues, each in its own git worktree so e
 
    Before writing the prompts, allocate anything numbered or shared and name the allocation in each prompt: **migration/version numbers** (every agent reading "the highest existing is N" writes N+1, and they all collide at merge), and **sole ownership of any file two issues would both touch**. A conflict found at merge costs a re-run, which is the most expensive thing that can happen to a wave.
 
-   Children see nothing but their prompt, so paste everything they need: the full issue text, its `check` command from `issues/status.json`, the allocations above, and any decision or error text from this conversation that bears on the issue.
+   Children see nothing but their prompt, so paste everything they need: the full issue text, its `check` command from `issues/status.json`, the allocations above, and any decision or error text from this conversation that bears on the issue. Also paste the **wave roster** — every sibling's issue id, title and the files or areas it owns — so a child can tell when its change lands on someone else's ground.
 
    Each agent's prompt:
 
@@ -38,6 +38,21 @@ Parallel implementation of independent issues, each in its own git worktree so e
    > ```
    >
    > `done` means every check exited 0. If anything failed or is unfinished, say `partial` or `blocked` and explain in `open_questions` — a truthful partial is worth more than a false done.
+   >
+   > **Shared changes — tell your siblings.** Other agents are building the issues in the roster below at the same time. If you change something one of them builds on — a schema or migration, a shared type, util or component signature, an API route's shape, an env var or config key — send a message as soon as that change is committed: `SendMessage` to `main` (the orchestrator), or straight to the sibling if it appears in your list of agents you can message. Two lines at most: what changed, what to do, plus the commit and a file path for detail, e.g. `users.name is now users.display_name (a1b2c3d, db/schema.ts) — rename your reads; migration 0007 is mine`. Never paste diffs or long context; write a file in your worktree and send its path. Don't wait for a reply, and don't edit outside your scope to fit a sibling — report the clash in `open_questions`.
+   >
+   > Wave roster: `<id — title — files/areas it owns, one line per sibling>`
+
+   **While the wave runs, relay shared changes.** When a child messages that it changed something siblings build on, forward the message to each affected sibling that is still running (`SendMessage` to its agent id; it is delivered at that agent's next tool round), and note the dependency: that producer's branch is merged first, and the consumers are re-verified after it. Don't poll children; you are notified when each one finishes.
+
+   **Running the wave as separate sessions instead** (one `claude -p` worker or `claude --bg` session per worktree, e.g. for runs longer than this conversation): workers find each other with `ListAgents` and message each other directly, with the same two-line rule. An unattended worker started with bypass permissions *holds* inbound messages, and a held message in a `-p` session expires after about five minutes, so start workers with the inbox open:
+
+   ```bash
+   git worktree add ../wt-003 -b issue-003 main
+   (cd ../wt-003 && claude -p --permission-mode auto --settings '{"crossSessionInbound":"accept"}' "$(cat issues/003.prompt.md)" >../wt-003.log 2>&1 &)
+   ```
+
+   (`RALPH_INBOUND=accept ./ralph/loop.sh build N` does the same for a Ralph loop.) `--bare` workers have no inbox, and Docker-sandboxed `ralph/afk.sh` workers cannot be reached at all. To wait for a long worker, send it one `SendMessage` with `notify_when_idle` instead of polling. In repos where agents must not talk, add `"permissions": {"deny": ["SendMessage", "ListAgents"]}` to the project settings — that also stops the relay above, so the human is the relay again.
 
 4. **Collect and verify.** For each finished agent, in the main checkout:
 

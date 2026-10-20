@@ -222,6 +222,14 @@ EOF
   fi
   cat <<'EOF'
 
+## Context & handoff
+
+- Commit at every green `./ralph/checks.sh` run. Git is the real checkpoint: /rewind misses Bash edits and subagent worktrees.
+- Before the window fills (`/context` shows it), `/compact` at a clean boundary with a focus line, e.g. `/compact keep issue 003, the failing auth test, the session-table plan` — don't wait for auto-compact.
+- Research-heavy steps (repo sweeps, docs, long logs) go to a subagent that returns a short summary.
+- Switching tasks: `./ralph/status.sh progress "<id>: done; left; next"`, commit, `/clear`, then start from `issues/progress.md`.
+- Optional: `./ralph/context-hooks.sh install` saves a state note (issue, failing check, next step) before each compaction and re-injects it after.
+
 ## Build & run
 
 <!-- How to build / start the app, required env vars, migrations -->
@@ -264,6 +272,9 @@ if [[ -e AGENTS.md ]]; then
       note "AGENTS.md already has a filled Checks section — left untouched"
     else
       note "AGENTS.md exists but its Checks section is EMPTY — Ralph has no gate until you fill it"
+    fi
+    if ! grep -q '^## Context & handoff' AGENTS.md; then
+      note "AGENTS.md has no 'Context & handoff' section (commit at green checks, /compact with a focus line, /clear + progress.md) — copy it from $TEMPLATE/AGENTS.md"
     fi
   fi
 else

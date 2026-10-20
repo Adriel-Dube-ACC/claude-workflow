@@ -1,1 +1,6 @@
 .DS_Store
+
+# secrets (added by vibe-stack integration-prep 2026-10-19)
+.env
+.env.*
+!.env.example
