@@ -96,6 +96,9 @@ refute "pass is refused when the issue's check was edited but not committed" bas
 git -C "$R" checkout -q -- issues/status.json
 agents_md "$R"
 refute "pass is refused when the working AGENTS.md drops a committed Check" bash -c "cd '$R' && ./ralph/status.sh pass 001"
+agents_md "$R" "true" "rm -f skeleton.ok"
+refute "pass is refused when the working AGENTS.md adds an uncommitted Check" bash -c "cd '$R' && ./ralph/status.sh pass 001"
+check "the extra check never ran (the tree was not touched)" test -f "$R/skeleton.ok"
 agents_md "$R" "true"
 echo '# tampered' >>"$R/ralph/checks.sh"
 refute "pass is refused when ralph/ has uncommitted changes" bash -c "cd '$R' && ./ralph/status.sh pass 001"

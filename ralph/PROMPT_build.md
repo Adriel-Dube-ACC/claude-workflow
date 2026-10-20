@@ -37,6 +37,14 @@ The walking skeleton (deployed app, health route through the database, smoke tes
 
 Before making any changes, search the codebase using parallel subagents. Do NOT assume something is not implemented — a failed grep is not proof of absence. Verify what exists first.
 
+# CONTEXT
+
+Your context window is a budget; files and git are the memory, not the conversation. You cannot run /compact or /clear yourself — the loop gives every pass a fresh window, and a long pass may be compacted automatically, which loses anything that exists only in the conversation.
+
+- Research-heavy steps (repo sweeps, reading docs or long logs, comparing many files) go to a subagent told to return a summary of at most ~20 lines. Only the summary enters your window.
+- Commit at every green `./ralph/checks.sh` run — a small `wip(<id>): …` commit is fine. Git is the real save point: checkpoints and /rewind do not see Bash edits or subagent worktrees.
+- If the pass is running long (several failed attempts, big logs), write the state down before going on: `./ralph/status.sh progress "<id>: WIP — tried …; failing: …; next: …"`. If `ralph/context-hooks.sh` is installed, that line, the failing check and the current issue are re-injected after a compaction.
+
 # IMPLEMENTATION
 
 Use /tdd: one test → one implementation, testing behavior through public interfaces.
@@ -52,7 +60,7 @@ Run `./ralph/checks.sh`. Every check must exit 0 before you commit.
 
 If `AGENTS.md` is missing or its Checks section is empty, discover the project's test and typecheck commands, run them, and record them in `AGENTS.md`.
 
-Then run `./ralph/status.sh pass <issue id>`. It re-runs the Checks plus the issue's own `check` command from `issues/status.json`, and flips `passes` to true only if every one exits 0. NEVER edit `passes` or `verified` by hand — `./ralph/status.sh validate` rejects a hand-flipped flag. If `pass` fails, the issue is not done.
+If you changed the Checks section of `AGENTS.md` (e.g. the walking skeleton adds its smoke test), commit that change first, on its own — `pass` only accepts the committed gate. Then run `./ralph/status.sh pass <issue id>`. It re-runs the Checks plus the issue's own `check` command from `issues/status.json`, and flips `passes` to true only if every one exits 0. NEVER edit `passes` or `verified` by hand — `./ralph/status.sh validate` rejects a hand-flipped flag. If `pass` fails, the issue is not done.
 
 # PROGRESS
 
@@ -60,7 +68,7 @@ Append one line for the next pass: `./ralph/status.sh progress "<id>: what you d
 
 # COMMIT
 
-Make a git commit that includes `issues/status.json` and `issues/progress.md` with the code (the loop may have appended a line to progress.md before you started — commit it too). The message must include:
+You have been committing at every green checks run. Finish with a git commit that includes `issues/status.json` and `issues/progress.md` with the code (the loop may have appended a line to progress.md before you started — commit it too). The message must include:
 
 1. Key decisions made
 2. Files changed

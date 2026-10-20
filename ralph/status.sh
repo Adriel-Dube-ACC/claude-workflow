@@ -197,22 +197,23 @@ pass() {
   fi
 
   # The gate must be the committed one: no uncommitted edits to ralph/, and the
-  # working AGENTS.md may add Checks but not drop or reword any HEAD has.
+  # working AGENTS.md Checks exactly as committed. An uncommitted extra check
+  # would run inside this same pass and could change the tree under the others,
+  # so changing the gate is its own commit (like changing an issue's check).
   if git rev-parse --verify --quiet HEAD >/dev/null; then
     if ! git diff --quiet HEAD -- ralph/ 2>/dev/null; then
       progress "FAIL $id — refused: uncommitted changes to ralph/"
       die "ralph/ has uncommitted changes — the gate scripts must be the committed ones"
     fi
-    local head_agents dropped
+    local head_agents
     head_agents="$(mktemp)"
     git show HEAD:AGENTS.md >"$head_agents" 2>/dev/null || : >"$head_agents"
-    dropped=$(comm -23 <("$HERE/checks.sh" --from "$head_agents" --list 2>/dev/null | sort -u) \
-                       <("$HERE/checks.sh" --list 2>/dev/null | sort -u))
-    rm -f "$head_agents"
-    if [[ -n "$dropped" ]]; then
-      progress "FAIL $id — refused: AGENTS.md drops committed Checks: $(paste -sd';' - <<<"$dropped")"
-      die "the working AGENTS.md removes or rewrites Checks that HEAD has: $(paste -sd';' - <<<"$dropped")"
+    if [[ "$("$HERE/checks.sh" --from "$head_agents" --list 2>/dev/null)" != "$("$HERE/checks.sh" --list 2>/dev/null)" ]]; then
+      rm -f "$head_agents"
+      progress "FAIL $id — refused: AGENTS.md Checks differ from the committed ones"
+      die "the working AGENTS.md Checks differ from HEAD's — commit the Checks change on its own, then pass"
     fi
+    rm -f "$head_agents"
   fi
 
   local checks_json checks_exit
