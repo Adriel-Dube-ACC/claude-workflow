@@ -4,7 +4,8 @@ set -uo pipefail
 # The return contract for fan-out (parallel worktree) agents.
 #
 #   ./ralph/result.sh validate <file>          # schema only
-#   ./ralph/result.sh verify <file> <base>     # schema + check the claims against git,
+#   ./ralph/result.sh verify <file> <base> [<branch>]
+#                                              # schema + check the claims against git,
 #                                              # then re-run AGENTS.md Checks in the
 #                                              # agent's worktree and compare exit codes.
 #                                              # The base branch's Checks are the floor:
@@ -56,14 +57,23 @@ validate() {
 }
 
 verify() {
-  local file="$1" base="${2:-}"
-  [[ -n "$base" ]] || die "usage: result.sh verify <file> <base-branch>"
+  local file="$1" base="${2:-}" expected="${3:-}"
+  [[ -n "$base" ]] || die "usage: result.sh verify <file> <base-branch> [<dispatched-branch>]"
   validate "$file" || return 1
   # Every path the branch changed: renames listed as delete + add (so moving a
   # protected file can't hide it), NUL-separated so odd names aren't quoted.
   changed() { git diff --name-only --no-renames -z "$base...$branch" | tr '\0' '\n' | sed '/^$/d'; }
   local branch commit errs=0
   branch=$(jq -r .branch "$file")
+  # The branch is the agent's claim; bind it to the work the orchestrator dispatched.
+  if [[ "$branch" == "$base" ]]; then
+    echo "result: branch is the base branch $base — a result must come from its own branch" >&2
+    errs=$((errs + 1))
+  fi
+  if [[ -n "$expected" && "$branch" != "$expected" ]]; then
+    echo "result: reports branch $branch but the orchestrator dispatched $expected" >&2
+    errs=$((errs + 1))
+  fi
   # The orchestrator names the file after the issue it dispatched; the agent's
   # "issue" field must agree, or it could borrow another issue's (weaker) check.
   local named; named="$(basename "$file" .result.json)"
@@ -182,6 +192,6 @@ verify() {
 
 case "${1:-}" in
   validate) [[ -n "${2:-}" ]] || die "usage: result.sh validate <file>"; validate "$2" ;;
-  verify)   [[ -n "${2:-}" ]] || die "usage: result.sh verify <file> <base-branch>"; verify "$2" "${3:-}" ;;
+  verify)   [[ -n "${2:-}" ]] || die "usage: result.sh verify <file> <base-branch> [<dispatched-branch>]"; verify "$2" "${3:-}" "${4:-}" ;;
   *)        sed -n '4,24p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

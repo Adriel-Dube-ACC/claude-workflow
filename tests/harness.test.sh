@@ -94,11 +94,23 @@ git -C "$R" add -A && git -C "$R" commit -qm "baseline"
 jq '.issues[0].check = "true"' "$R/issues/status.json" >"$R/s" && mv "$R/s" "$R/issues/status.json"
 refute "pass is refused when the issue's check was edited but not committed" bash -c "cd '$R' && ./ralph/status.sh pass 001"
 git -C "$R" checkout -q -- issues/status.json
+agents_md "$R"
+refute "pass is refused when the working AGENTS.md drops a committed Check" bash -c "cd '$R' && ./ralph/status.sh pass 001"
+agents_md "$R" "true"
+echo '# tampered' >>"$R/ralph/checks.sh"
+refute "pass is refused when ralph/ has uncommitted changes" bash -c "cd '$R' && ./ralph/status.sh pass 001"
+git -C "$R" checkout -q -- ralph/checks.sh
 check "pass succeeds when Checks and the issue check are green" bash -c "cd '$R' && ./ralph/status.sh pass 001"
 check "passes flipped with verified evidence" \
   jq -e '.issues[0].passes == true and .issues[0].verified.check.exit_code == 0 and (.issues[0].verified.agentsChecks | length) == 1' "$R/issues/status.json"
 check "PASS line logged" grep -q 'PASS 001 — issue check `test -f skeleton.ok` → 0' "$R/issues/progress.md"
 check "a verified pass still validates" bash -c "cd '$R' && ./ralph/status.sh validate"
+cp "$R/issues/status.json" "$WORK/good-status.json"
+jq '.issues[0].check = "true"' "$WORK/good-status.json" >"$R/issues/status.json"
+refute "evidence recorded for a different check is rejected" bash -c "cd '$R' && ./ralph/status.sh validate"
+jq '.issues[0].verified.base = "deadbee"' "$WORK/good-status.json" >"$R/issues/status.json"
+refute "evidence pointing at a non-existent commit is rejected" bash -c "cd '$R' && ./ralph/status.sh validate"
+cp "$WORK/good-status.json" "$R/issues/status.json"
 check "next runnable is now the AFK issue it unblocked" bash -c "cd '$R' && [[ \$(./ralph/status.sh next) == 002 ]]"
 mv "$R/issues/001-walking-skeleton.md" "$R/issues/done/"
 check "an issue moved to done/ still resolves" bash -c "cd '$R' && ./ralph/status.sh validate"
@@ -135,9 +147,11 @@ contract() { # contract <status> <files json> <checks json> <questions json>
 }
 GREEN='[{"command":"true","exit_code":0},{"command":"test -f feature.txt","exit_code":0}]'
 contract 'done' '["feature.txt"]' "$GREEN" '[]'
+refute "a result naming a different branch than the one dispatched fails verify" \
+  bash -c "cd '$R' && ./ralph/result.sh verify issues/002.result.json main issue-002-other"
 check "a truthful done result validates" bash -c "cd '$R' && ./ralph/result.sh validate issues/002.result.json"
 check "a truthful done result verifies against git and a re-run (Checks + issue check)" \
-  bash -c "cd '$R' && ./ralph/result.sh verify issues/002.result.json main"
+  bash -c "cd '$R' && ./ralph/result.sh verify issues/002.result.json main issue-002"
 contract 'done' '["feature.txt"]' '[{"command":"true","exit_code":1}]' '[]'
 refute "done with a non-zero exit code is rejected" bash -c "cd '$R' && ./ralph/result.sh validate issues/002.result.json"
 contract partial '["feature.txt"]' '[{"command":"true","exit_code":0}]' '[]'

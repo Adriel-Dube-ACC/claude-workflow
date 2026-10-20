@@ -61,6 +61,17 @@ issue_path() { # issue_path <file> -> issues/<file> or issues/done/<file>
   fi
 }
 
+section() { # section <file> <heading> — body of "## <heading>", HTML comments dropped; exit 1 if absent
+  awk -v h="## $2" '
+    $0 == h || index($0, h " ") == 1 { on = 1; found = 1; next }
+    on && /^## / { on = 0 }
+    /<!--/ { c = 1 }
+    on && !c { print }
+    /-->/ { c = 0 }
+    END { exit !found }
+  ' "$1"
+}
+
 validate() {
   need_status
   local errs=0 line
@@ -85,8 +96,19 @@ validate() {
           | "issue \($me): blockedBy unknown id \(.)"),
        (if .passes == true and ((.verified.at // "") == "")
         then "issue \(.id): passes is true without verified evidence — only `ralph/status.sh pass` may flip it"
+        elif .passes == true and (.verified.check.command != .check or .verified.check.exit_code != 0)
+        then "issue \(.id): verified evidence is for a different check (or a non-zero exit) — run `ralph/status.sh pass \(.id)` again"
         else empty end))
   ' "$STATUS")
+
+  # Recorded evidence must point at a real commit.
+  local b
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    b="${line#* }"
+    git cat-file -e "$b^{commit}" 2>/dev/null \
+      || { echo "status: issue ${line%% *}: verified.base $b is not a commit in this repo" >&2; errs=$((errs + 1)); }
+  done < <(jq -r '.issues[] | select(.passes == true and (.verified.base // "") != "" and .verified.base != "no-commit") | "\(.id) \(.verified.base)"' "$STATUS")
 
   # Every listed file exists, and every issue file is listed.
   local f
@@ -98,6 +120,30 @@ validate() {
     jq -e --arg b "$(basename "$f")" '.issues | map(.file) | index($b)' "$STATUS" >/dev/null \
       || { echo "status: $f has no entry in $STATUS" >&2; errs=$((errs + 1)); }
   done
+
+  # status.json must agree with what each issue file declares. Only fields the
+  # file actually has are compared, so a terse issue file is not an error.
+  local id file path want got
+  while IFS=$'\t' read -r id file; do
+    path="$(issue_path "$file")" || continue
+    [[ "$file" == "$id"-* ]] || { echo "status: issue $id: file $file does not start with \"$id-\"" >&2; errs=$((errs + 1)); }
+    if section "$path" Type >/dev/null; then
+      got=$(section "$path" Type | grep -oE '\b(AFK|HITL)\b' | head -n1)
+      want=$(jq -r --arg id "$id" '.issues[] | select(.id == $id) | .type' "$STATUS")
+      [[ "$got" == "$want" ]] || { echo "status: issue $id: $path says type ${got:-none}, $STATUS says $want" >&2; errs=$((errs + 1)); }
+    fi
+    got=$(section "$path" Check | grep -m1 -oE '`[^`]+`' | sed 's/^`//; s/`$//')
+    if [[ -n "$got" ]]; then
+      want=$(jq -r --arg id "$id" '.issues[] | select(.id == $id) | .check' "$STATUS")
+      [[ "$got" == "$want" ]] || { echo "status: issue $id: $path Check is '$got', $STATUS check is '$want'" >&2; errs=$((errs + 1)); }
+    fi
+    if section "$path" "Blocked by" >/dev/null; then
+      got=$(section "$path" "Blocked by" | grep -oE '(^|[^0-9A-Za-z])[0-9]{3,}-[A-Za-z0-9._-]*\.md' \
+            | grep -oE '[0-9]{3,}-' | tr -d - | sort -u | paste -sd, -)
+      want=$(jq -r --arg id "$id" '.issues[] | select(.id == $id) | .blockedBy | sort | unique | join(",")' "$STATUS")
+      [[ "$got" == "$want" ]] || { echo "status: issue $id: $path is blocked by [${got}], $STATUS blockedBy is [${want}]" >&2; errs=$((errs + 1)); }
+    fi
+  done < <(jq -r '.issues[]? | select(.id and .file) | "\(.id)\t\(.file)"' "$STATUS")
 
   # A passing issue whose blocker is not passing means the order was skipped.
   while IFS= read -r line; do
@@ -148,6 +194,25 @@ pass() {
   if [[ -n "$blockers" ]]; then
     progress "FAIL $id — refused: blocker(s) $blockers not passing yet"
     die "issue $id is blocked by $blockers, which do not pass yet"
+  fi
+
+  # The gate must be the committed one: no uncommitted edits to ralph/, and the
+  # working AGENTS.md may add Checks but not drop or reword any HEAD has.
+  if git rev-parse --verify --quiet HEAD >/dev/null; then
+    if ! git diff --quiet HEAD -- ralph/ 2>/dev/null; then
+      progress "FAIL $id — refused: uncommitted changes to ralph/"
+      die "ralph/ has uncommitted changes — the gate scripts must be the committed ones"
+    fi
+    local head_agents dropped
+    head_agents="$(mktemp)"
+    git show HEAD:AGENTS.md >"$head_agents" 2>/dev/null || : >"$head_agents"
+    dropped=$(comm -23 <("$HERE/checks.sh" --from "$head_agents" --list 2>/dev/null | sort -u) \
+                       <("$HERE/checks.sh" --list 2>/dev/null | sort -u))
+    rm -f "$head_agents"
+    if [[ -n "$dropped" ]]; then
+      progress "FAIL $id — refused: AGENTS.md drops committed Checks: $(paste -sd';' - <<<"$dropped")"
+      die "the working AGENTS.md removes or rewrites Checks that HEAD has: $(paste -sd';' - <<<"$dropped")"
+    fi
   fi
 
   local checks_json checks_exit
