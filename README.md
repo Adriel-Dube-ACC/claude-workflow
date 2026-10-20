@@ -104,7 +104,7 @@ Claude interviews you, explores the codebase, and writes `issues/prd.md`.
 /prd-to-issues
 ```
 
-Vertical slices, tagged **AFK** (autonomous) or **HITL** (needs you), with `Blocked by` dependencies.
+Vertical slices, tagged **AFK** (autonomous) or **HITL** (needs you), with `Blocked by` dependencies. On a new project issue **001 is a walking skeleton** — deployed hello-world, `/api/health` running a real database query, a Playwright smoke test in the AGENTS.md Checks — and every other issue is blocked by it. Each issue gets one **Check** command, and all of them land in `issues/status.json` with `passes: false`.
 
 ### 3. Check consistency
 
@@ -122,7 +122,7 @@ Verifies every user story is covered, nothing contradicts the PRD, and the depen
 /fan-out-issues
 ```
 
-Launches one worktree-isolated agent per unblocked AFK issue (waves of ≤4). Each runs TDD, passes the AGENTS.md checks, commits on its own branch. You review and merge.
+Launches one worktree-isolated agent per unblocked AFK issue (waves of ≤4). Each runs TDD, passes the AGENTS.md checks, commits on its own branch, and returns a fixed result contract (`issues/<id>.result.json`: issue, status, branch, commit, files touched, checks with exit codes, open questions). `ralph/result.sh verify` checks every claim against git and re-runs the checks before anything is reported. You review and merge.
 
 **b) Ralph loop (serial, autonomous, fresh context per task):**
 
@@ -159,8 +159,19 @@ Ralph is a bash loop that feeds a fresh Claude a prompt each iteration. Progress
 | `loop.sh [plan\|build] [n]` | headless loop, `--permission-mode auto` | local |
 | `once.sh [plan\|build]` | single interactive iteration | local, supervised |
 | `afk.sh <n> [plan\|build]` | headless loop | Docker sandbox |
+| `checks.sh [--json\|--list]` | runs every AGENTS.md Check; an empty Checks section fails | any |
+| `status.sh validate\|summary\|next\|pass <id>\|progress "<text>"` | `issues/status.json` + `issues/progress.md` | any |
+| `result.sh validate\|verify <file> <base>` | the fan-out return contract | orchestrator |
 
-All three stop early on `<promise>NO MORE TASKS</promise>` (build) or `<promise>PLAN COMPLETE</promise>` (plan).
+All three loop scripts stop early on `<promise>NO MORE TASKS</promise>` (build) or `<promise>PLAN COMPLETE</promise>` (plan).
+
+### State files
+
+- **`issues/status.json`** — one entry per issue: id, file, title, type, behaviour, check command, blockedBy, `passes`. Everything starts failing. Only `./ralph/status.sh pass <id>` flips `passes`, after the AGENTS.md Checks *and* the issue's own check exit 0 with every blocker already passing; it stores the evidence in `verified`, and `validate` rejects a `true` without it.
+- **`issues/progress.md`** — append-only log. The loop scripts log each iteration's start (HEAD + passing count), `status.sh pass` logs PASS/FAIL with exit codes, and the build prompt has the agent log what it did and what's next. It's the handoff between fresh contexts.
+- **`issues/<id>.result.json`** — one per fan-out agent, verified by `result.sh verify`.
+
+Tests for all of this: `tests/harness.test.sh`.
 
 ### AGENTS.md
 
@@ -196,6 +207,8 @@ issues/
 ├── prd.md               ← the product requirements doc
 ├── 001-auth-setup.md    ← AFK issue, open
 ├── 002-user-profile.md  ← HITL issue, open
+├── status.json          ← machine-readable status; passes flipped only by ralph/status.sh pass
+├── progress.md          ← append-only log, one or more lines per Ralph pass
 └── done/
     └── 000-db-schema.md ← completed
 docs/

@@ -5,11 +5,19 @@ Study (don't skim) before doing anything:
 1. `AGENTS.md` — operational guide: commands, checks, quirks
 2. `issues/prd.md` and `docs/research.md`, if present
 3. All open issues: `issues/*.md` (ignore `issues/done/`)
-4. Recent work: `git log -n 10 --oneline`, plus the most recent full commit message
+4. Issue status: `./ralph/status.sh summary` (reads `issues/status.json` — which issues pass, which are blocked, the next runnable one)
+5. The handoff from earlier passes: the last ~30 lines of `issues/progress.md`
+6. Recent work: `git log -n 10 --oneline`, plus the most recent full commit message
+
+# PROVE THE TREE IS GREEN
+
+Run `./ralph/checks.sh` before changing anything. It runs every command in the "Checks" section of `AGENTS.md`. If any check fails on the untouched tree, fixing that IS this pass's task (priority 1 below) — do not build on a red tree.
 
 # TASK SELECTION
 
-Work on AFK issues only — never HITL. An issue is only workable if everything in its "Blocked by" list is already in `issues/done/`.
+Work on AFK issues only — never HITL. An issue is only workable if everything in its "Blocked by" list is already in `issues/done/` and marked `passes: true` in `issues/status.json`. On a new project that means nothing is workable until the walking skeleton (issue 001) passes.
+
+No `issues/status.json` (a project set up before it existed)? Fall back to `issues/done/` alone, skip the `status.sh pass` step below, and say in your commit message that a `./ralph/loop.sh plan` pass should create it.
 
 Pick exactly ONE task — the most important one, prioritized:
 
@@ -20,6 +28,10 @@ Pick exactly ONE task — the most important one, prioritized:
 5. Refactors
 
 If all AFK tasks are complete, output <promise>NO MORE TASKS</promise> and stop.
+
+# TRACER BULLETS
+
+The walking skeleton (deployed app, health route through the database, smoke test in Checks) is the first slice; every later issue is one more thin end-to-end slice through it — UI, API, data and test together, demoable on its own. Never build a whole horizontal layer (all the tables, all the endpoints) ahead of the features that use it. If the issue you picked can't be finished end to end in one pass, finish a thinner slice of it, note the rest in the issue file, and leave `passes` false.
 
 # EXPLORATION
 
@@ -36,13 +48,19 @@ Use /tdd: one test → one implementation, testing behavior through public inter
 
 # FEEDBACK LOOPS
 
-Run every command in the "Checks" section of `AGENTS.md`. All must exit 0 before you commit.
+Run `./ralph/checks.sh`. Every check must exit 0 before you commit.
 
 If `AGENTS.md` is missing or its Checks section is empty, discover the project's test and typecheck commands, run them, and record them in `AGENTS.md`.
 
+Then run `./ralph/status.sh pass <issue id>`. It re-runs the Checks plus the issue's own `check` command from `issues/status.json`, and flips `passes` to true only if every one exits 0. NEVER edit `passes` or `verified` by hand — `./ralph/status.sh validate` rejects a hand-flipped flag. If `pass` fails, the issue is not done.
+
+# PROGRESS
+
+Append one line for the next pass: `./ralph/status.sh progress "<id>: what you did; what is left or blocking; what the next pass should pick up"`. The log is the handoff between fresh contexts — write what you would want to read with no memory of this session.
+
 # COMMIT
 
-Make a git commit. The message must include:
+Make a git commit that includes `issues/status.json` and `issues/progress.md` with the code (the loop may have appended a line to progress.md before you started — commit it too). The message must include:
 
 1. Key decisions made
 2. Files changed
@@ -50,7 +68,7 @@ Make a git commit. The message must include:
 
 # THE ISSUE
 
-- Task complete → move the issue file to `issues/done/`.
+- Task complete (`./ralph/status.sh pass <id>` succeeded) → move the issue file to `issues/done/`.
 - Task incomplete → append a note to the issue file: what was done, what remains, what's blocking.
 
 # SELF-IMPROVEMENT

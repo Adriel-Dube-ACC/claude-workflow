@@ -13,6 +13,8 @@ Install the workflow harness into the current project and — the part that matt
 
 Look for `ralph/`, `AGENTS.md`, `issues/`, `docs/`, `CLAUDE.md`. Never overwrite an existing file without asking. Report what's present and what's missing before doing anything.
 
+An existing `AGENTS.md` (create-next-app writes one) is kept and appended to, never replaced: the harness section (`## Checks`, `## Build & run`, `## Quirks`) goes after its content, and managed blocks such as `<!-- BEGIN:nextjs-agent-rules -->` … `<!-- END:nextjs-agent-rules -->` are left exactly as they are.
+
 ### 2. Copy the harness
 
 If `~/bin/ralphify` exists, run it instead of copying by hand — it does this step
@@ -20,8 +22,8 @@ plus stack detection, and never overwrites anything. Then continue from step 3.
 
 Otherwise, the template lives at `~/Claude/claude-workflow-export/`. Copy only what's missing:
 
-- `ralph/PROMPT_build.md`, `ralph/PROMPT_plan.md`, `ralph/loop.sh`, `ralph/once.sh`, `ralph/afk.sh` (chmod +x the scripts)
-- `AGENTS.md` (template)
+- `ralph/PROMPT_build.md`, `ralph/PROMPT_plan.md`, `ralph/loop.sh`, `ralph/once.sh`, `ralph/afk.sh`, `ralph/checks.sh`, `ralph/status.sh`, `ralph/result.sh` (chmod +x the scripts)
+- `AGENTS.md` (template) — or, if one exists without a `## Checks` section, append the template's `## Checks` / `## Build & run` / `## Quirks` sections to it
 - `issues/done/`, `docs/`
 
 If `ralph/prompt.md` (the old single-prompt version) exists, tell the user it's superseded by the plan/build split and offer to delete it.
@@ -44,7 +46,7 @@ If a project has no tests at all, say so plainly — Ralph should not run autono
 
 ### 4. Write AGENTS.md
 
-Keep it under ~60 lines; it loads on every Ralph iteration.
+Keep it under ~60 lines; it loads on every Ralph iteration. Edit only the harness sections; leave everything else in an existing file as it was.
 
 ```markdown
 ## Checks (must all exit 0 before any commit)
@@ -57,6 +59,8 @@ Keep it under ~60 lines; it loads on every Ralph iteration.
 - <non-obvious gotchas: monorepo layout, env setup, things that bite>
 ```
 
+Confirm with `./ralph/checks.sh` — it runs exactly what the Ralph loop will run, parsed from the file you just wrote, and must end `checks: N/N passed`.
+
 ### 5. Report
 
-State: files created, the checks you verified (with their exit status), and anything that blocks an autonomous run. Then give the next command — `/write-a-prd` if there's no PRD, `./ralph/loop.sh plan` if there is one but the issue list is stale, or `./ralph/loop.sh build 3` if issues are ready.
+State: files created, the checks you verified (paste the `./ralph/checks.sh` output), and anything that blocks an autonomous run. Then give the next command — `/write-a-prd` if there's no PRD, `./ralph/loop.sh plan` if there is one but the issue list is stale, or `./ralph/loop.sh build 3` if issues are ready.

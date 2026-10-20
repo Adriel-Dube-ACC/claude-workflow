@@ -22,7 +22,12 @@ stream_text='select(.type == "assistant").message.content[]? | select(.type == "
 # jq filter to extract final result
 final_result='select(.type == "result").result // empty'
 
+# Append to issues/progress.md (no-op if the status helper is missing).
+log_progress() { [[ -x ralph/status.sh ]] && ./ralph/status.sh progress "$*" || true; }
+state() { echo "HEAD $(git rev-parse --short HEAD 2>/dev/null || echo none), $(./ralph/status.sh summary --line 2>/dev/null || echo 'no status.json')"; }
+
 for ((i=1; i<=ITERATIONS; i++)); do
+  log_progress "loop (sandboxed): $MODE iteration $i/$ITERATIONS started — $(state)"
   echo "=== ralph $MODE (sandboxed) — iteration $i/$ITERATIONS ==="
   tmpfile=$(mktemp)
   trap "rm -f $tmpfile" EXIT
@@ -40,6 +45,9 @@ for ((i=1; i<=ITERATIONS; i++)); do
 
   if [[ "$result" == *"<promise>NO MORE TASKS</promise>"* || "$result" == *"<promise>PLAN COMPLETE</promise>"* ]]; then
     echo "Ralph ($MODE) complete after $i iteration(s)."
+    log_progress "loop (sandboxed): $MODE complete after $i iteration(s) — $(state)"
     exit 0
   fi
 done
+
+log_progress "loop (sandboxed): $MODE stopped at the iteration cap ($ITERATIONS) — $(state)"

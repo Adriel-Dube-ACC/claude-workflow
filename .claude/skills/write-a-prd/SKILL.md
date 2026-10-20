@@ -52,6 +52,7 @@ A list of implementation decisions that were made. This can include:
 - Schema changes
 - API contracts
 - Specific interactions
+- The walking skeleton: hosting target (e.g. Vercel / Render), database (e.g. Neon dev branch), auth provider (e.g. Clerk) if there is sign-in, and the deployed URL if one exists — `/prd-to-issues` turns this into issue 001
 
 Do NOT include specific file paths or code snippets. They may end up being outdated very quickly.
 
@@ -62,6 +63,7 @@ A list of testing decisions that were made. Include:
 - A description of what makes a good test (only test external behavior, not implementation details)
 - Which modules will be tested
 - Prior art for the tests (i.e. similar types of tests in the codebase)
+- The end-to-end verifier (default: Playwright). Every issue's pass/fail flag is backed by one command it runs; without one, the flag is decoration
 
 ## Out of Scope
 

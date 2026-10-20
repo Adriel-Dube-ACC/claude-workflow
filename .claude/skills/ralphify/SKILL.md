@@ -18,6 +18,7 @@ Look at the target directory before running anything.
 | Situation | Path |
 |---|---|
 | Directory doesn't exist yet, or is empty | **New** — step 1a |
+| New Next.js app | **Existing** — run `create-next-app` first, then step 1b on its output |
 | Directory has source files, a git history, a package manifest | **Existing** — step 1b |
 
 If the user names a project that doesn't exist yet, that's New. If they say
@@ -35,6 +36,11 @@ Script location: `~/bin/newproj`. It refuses to run if the destination already
 exists, and it never overwrites a file that's already there. Set
 `CLAUDE_PROJECTS_DIR` to scaffold somewhere other than `~/Claude`, or
 `NEWPROJ_VENDOR_SKILLS=1` to copy the skills in for a self-contained repo.
+
+For a Next.js project, don't use `newproj`: run `npx create-next-app@latest <name>`
+first (it writes an `AGENTS.md` with a managed `<!-- BEGIN:nextjs-agent-rules -->`
+block that `next dev` keeps current), `git init` + commit, then step 1b in it.
+Starting from the framework's scaffold gets version-matched agent docs for free.
 
 A brand-new project has nothing to detect and nothing to verify. So:
 
@@ -60,6 +66,12 @@ ralphify
 Script location: `~/bin/ralphify`. It never overwrites an existing file, reports
 every path as created or kept, and prints:
 
+- **AGENTS.md handling** — if the file exists with no `## Checks` section (the
+  create-next-app case) its content is kept byte-for-byte and a harness section
+  (Checks / Build & run / Quirks) is appended between
+  `<!-- BEGIN:ralph-harness -->` / `<!-- END:ralph-harness -->` markers, after any
+  managed blocks. If it already has `## Checks`, nothing in it changes.
+
 - **Candidate checks** — detected from package.json / pyproject.toml / go.mod /
   Cargo.toml / Makefile. **Unverified.** The script does not execute them.
 - **Notes** — monorepo layout, missing `node_modules`, virtualenv path, dirty
@@ -74,6 +86,10 @@ for each check is still an open question you have to resolve.
 ## 2. Handle what `ralphify` found
 
 - `AGENTS.md exists but its Checks section is EMPTY` → you are filling it in step 4.
+- `AGENTS.md had no Checks section — appended one` → you are filling the appended
+  section in step 4. The managed blocks it lists must still be there afterwards.
+- `CLAUDE.md does not import AGENTS.md` → add an `@AGENTS.md` line at the top, so
+  interactive sessions load the Checks too.
 - `AGENTS.md already has a filled Checks section` → run those existing commands
   anyway to confirm they still pass; report any that don't.
 - `ralph/prompt.md` present → superseded by the plan/build split; offer to delete it.
@@ -99,9 +115,25 @@ write that directory into the check line.
 
 ## 4. Write AGENTS.md
 
+**Append, never replace.** Edit only the harness section (`## Checks`, `## Build &
+run`, `## Quirks` — between the `ralph-harness` markers when ralphify appended
+them). Never rewrite the file wholesale, and never touch another tool's managed
+block (`<!-- BEGIN:nextjs-agent-rules -->` … `<!-- END:… -->` and the like): the
+tool that owns it rewrites it, and deleting it only produces a dirty diff later.
+
 Uncomment the survivors under `## Checks`, delete the rest, and delete the
 `UNVERIFIED candidates detected by ralphify` comment block once resolved. Fill in
 `## Build & run` and `## Quirks` from what you learned while running the checks.
+
+Then prove the file parses the way the loop reads it:
+
+```bash
+./ralph/checks.sh --list   # prints exactly the commands you verified
+./ralph/checks.sh          # every line PASS, final line "checks: N/N passed"
+```
+
+and, if the file had managed blocks, that each `BEGIN:`/`END:` marker pair is
+still present (`grep -c 'BEGIN:\|END:' AGENTS.md`).
 
 On a new project the Checks section stays empty until a real test exists — leave
 a one-line note saying so rather than a placeholder command.
@@ -112,12 +144,15 @@ Keep the file under ~60 lines — it loads on every Ralph iteration.
 
 State plainly:
 
-- which path you took, and files created vs. kept
-- each check with its verified exit status
+- which path you took, and files created vs. kept (and whether AGENTS.md was
+  appended to, with its managed blocks intact)
+- each check with its verified exit status — the `./ralph/checks.sh` output
 - anything blocking an autonomous run (no tests, broken build, no git)
 
 Then the next command:
 
 - existing project, no map of the codebase yet → `/research`
 - no PRD → `/write-a-prd` → `/prd-to-issues` → `/analyze-issues`
+  (on a new project `/prd-to-issues` makes 001 the walking skeleton and writes
+  `issues/status.json`; nothing else runs until the skeleton passes)
 - issues ready → `./ralph/loop.sh build 3`

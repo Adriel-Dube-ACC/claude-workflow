@@ -4,7 +4,8 @@ set -euo pipefail
 # ralphify — add the Ralph workflow harness to an EXISTING project.
 # Companion to `newproj`, which scaffolds greenfield projects.
 #
-# Nothing is ever overwritten. Detected checks land in AGENTS.md as UNVERIFIED
+# Nothing is ever overwritten; an existing AGENTS.md with no Checks section
+# gets a harness section appended (its own content, managed blocks included, is kept). Detected checks land in AGENTS.md as UNVERIFIED
 # candidates; `/scaffold-workflow` inside Claude runs them and finalizes the file.
 
 TEMPLATE="${CLAUDE_WORKFLOW_TEMPLATE:-$HOME/Claude/claude-workflow-export}"
@@ -19,7 +20,9 @@ ralphify — adopt the Ralph workflow harness in an existing project.
   ralphify --vendor-skills  also copy the skills into .claude/skills/
 
 Adds (only if missing): ralph/, AGENTS.md, issues/done/, docs/, CLAUDE.md stub.
-Existing files are never touched.
+Existing files are never overwritten. The one edit to an existing file: an
+AGENTS.md with no "## Checks" section (e.g. create-next-app's) gets a harness
+section appended between ralph-harness markers; its own content is kept.
 EOF
 }
 
@@ -46,7 +49,7 @@ cd "$DEST"
 DEST="$PWD"
 NAME="$(basename "$DEST")"
 
-CREATED=(); KEPT=(); NOTES=(); CHECKS=()
+CREATED=(); KEPT=(); APPENDED=(); NOTES=(); CHECKS=()
 
 note() { NOTES+=("$1"); }
 
@@ -194,21 +197,74 @@ else
 fi
 
 # --- AGENTS.md: template preamble + detected candidates -------------------
-if [[ -e AGENTS.md ]]; then
-  KEPT+=("AGENTS.md")
-  # A real check is a "- `cmd`" line under ## Checks that is NOT inside an
-  # HTML comment — the stock template ships commented-out examples.
-  if awk '
-      /^## Checks/ { inchecks = 1; next }
-      /^## /       { inchecks = 0 }
-      /<!--/       { incomment = 1 }
-      /-->/        { incomment = 0; next }
-      inchecks && !incomment && /^- `/ { found = 1 }
-      END { exit !found }
-    ' AGENTS.md; then
-    note "AGENTS.md already has a filled Checks section — left untouched"
+# The harness section (Checks / Build & run / Quirks). Written whole into a new
+# AGENTS.md, or appended between ralph-harness markers to an existing one that
+# has no Checks section yet — e.g. the AGENTS.md create-next-app generates,
+# whose <!-- BEGIN:nextjs-agent-rules --> block `next dev` keeps rewriting.
+harness_section() {
+  cat <<'EOF'
+## Checks (must all exit 0 before any commit)
+
+Run them all with `./ralph/checks.sh`. On a new project the walking skeleton
+(issue 001) adds the Playwright smoke test here.
+
+EOF
+  if (( ${#CHECKS[@]} )); then
+    echo "<!-- UNVERIFIED candidates detected by ralphify on $(date +%Y-%m-%d)."
+    echo "     Run each one. Delete what fails, uncomment what passes."
+    echo "     \`/scaffold-workflow\` in Claude does this for you. -->"
+    echo "<!--"
+    printf -- '- `%s`\n' "${CHECKS[@]}"
+    echo "-->"
   else
-    note "AGENTS.md exists but its Checks section is EMPTY — Ralph has no gate until you fill it"
+    echo "<!-- No checks detected. Ralph must not run autonomously without a gate:"
+    echo "     get one trivial test passing first, then list its command here. -->"
+  fi
+  cat <<'EOF'
+
+## Build & run
+
+<!-- How to build / start the app, required env vars, migrations -->
+
+## Quirks
+
+<!-- Environment gotchas, non-obvious behaviors -->
+EOF
+}
+
+if [[ -e AGENTS.md ]]; then
+  if ! grep -q '^## Checks' AGENTS.md; then
+    APPENDED+=("AGENTS.md (existing content kept; harness section added at the end)")
+    managed=$(grep -oE '<!-- BEGIN:[A-Za-z0-9_-]+ -->' AGENTS.md | sed -E 's/<!-- BEGIN:(.*) -->/\1/' | paste -sd, - || true)
+    [[ -n "$managed" ]] && note "AGENTS.md has managed block(s) [$managed] — kept byte-for-byte; the harness section sits after them between ralph-harness markers"
+    note "AGENTS.md had no Checks section — appended one; fill it with verified commands"
+    if (( DRY == 0 )); then
+      [[ -s AGENTS.md && -n "$(tail -c1 AGENTS.md)" ]] && echo >> AGENTS.md
+      {
+        echo
+        echo "<!-- BEGIN:ralph-harness (added by ralphify; edit freely between these markers) -->"
+        echo
+        harness_section
+        echo
+        echo "<!-- END:ralph-harness -->"
+      } >> AGENTS.md
+    fi
+  else
+    KEPT+=("AGENTS.md")
+    # A real check is a "- `cmd`" line under ## Checks that is NOT inside an
+    # HTML comment — the stock template ships commented-out examples.
+    if awk '
+        /^## Checks/ { inchecks = 1; next }
+        /^## /       { inchecks = 0 }
+        /<!--/       { incomment = 1 }
+        /-->/        { incomment = 0; next }
+        inchecks && !incomment && /^- `/ { found = 1 }
+        END { exit !found }
+      ' AGENTS.md; then
+      note "AGENTS.md already has a filled Checks section — left untouched"
+    else
+      note "AGENTS.md exists but its Checks section is EMPTY — Ralph has no gate until you fill it"
+    fi
   fi
 else
   CREATED+=("AGENTS.md")
@@ -221,30 +277,8 @@ Keep this file under ~60 lines. Operational facts only — commands, quirks, got
 discovered the hard way. It is loaded on every Ralph iteration, so every line costs
 context on every run. It is NOT a changelog.
 
-## Checks (must all exit 0 before any commit)
-
 EOF
-      if (( ${#CHECKS[@]} )); then
-        echo "<!-- UNVERIFIED candidates detected by ralphify on $(date +%Y-%m-%d)."
-        echo "     Run each one. Delete what fails, uncomment what passes."
-        echo "     \`/scaffold-workflow\` in Claude does this for you. -->"
-        echo "<!--"
-        printf -- '- `%s`\n' "${CHECKS[@]}"
-        echo "-->"
-      else
-        echo "<!-- No checks detected. Ralph must not run autonomously without a gate:"
-        echo "     get one trivial test passing first, then list its command here. -->"
-      fi
-      cat <<'EOF'
-
-## Build & run
-
-<!-- How to build / start the app, required env vars, migrations -->
-
-## Quirks
-
-<!-- Environment gotchas, non-obvious behaviors -->
-EOF
+      harness_section
     } > AGENTS.md
   fi
 fi
@@ -252,10 +286,13 @@ fi
 # --- CLAUDE.md stub -------------------------------------------------------
 if [[ -e CLAUDE.md ]]; then
   KEPT+=("CLAUDE.md")
+  grep -q '@AGENTS.md' CLAUDE.md || note "CLAUDE.md does not import AGENTS.md — add an @AGENTS.md line so interactive sessions see the Checks"
 else
   CREATED+=("CLAUDE.md")
   if (( DRY == 0 )); then
     cat > CLAUDE.md <<EOF
+@AGENTS.md
+
 # $NAME — Claude Code Instructions
 
 ## Project summary
@@ -295,6 +332,11 @@ if (( ${#CREATED[@]} )); then
   echo
   echo "  Created:"
   printf '    + %s\n' "${CREATED[@]}"
+fi
+if (( ${#APPENDED[@]} )); then
+  echo
+  echo "  Appended to:"
+  printf '    > %s\n' "${APPENDED[@]}"
 fi
 if (( ${#KEPT[@]} )); then
   echo
